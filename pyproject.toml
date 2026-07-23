@@ -5,6 +5,8 @@ description = "MCP-native customer support triage pipeline (portfolio project, b
 requires-python = ">=3.12"
 dependencies = [
     "mcp>=1.28.1",
+    "google-auth-oauthlib>=1.2.1",
+    "google-api-python-client>=2.140.0",
 ]
 
 [build-system]

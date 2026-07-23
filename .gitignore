@@ -2,8 +2,24 @@
 __pycache__/
 *.pyc
 jsonrpc.log
+*.egg-info/
 
 # local tool config, not project source
 .claude/settings.local.json
 
 .DS_Store
+
+# OAuth keyfiles/tokens belong in ~/.gmail-mcp/ and ~/.drive-mcp/, never
+# in-repo -- these rules are a second line of defense in case one ever
+# lands here by accident.
+gcp-oauth.keys.json
+credentials.json
+token.json
+*.pem
+*.key
+
+# Secrets/env files -- committed example files are fine, real ones aren't.
+.env
+.env.local
+.env.*.local
+!.env.example
