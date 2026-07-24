@@ -99,3 +99,16 @@ This is an interactive browser UI, so run it yourself and walk through:
   crash-on-error) occurred — `server.py` only ever writes to stderr via
   `logging`, and `client.py` builds each JSON-RPC message by hand instead
   of going through `ClientSession`, so nothing was silently bundled.
+
+## Regression check (Step 4)
+
+Step 4 added a `ping` tool to this server (needed as a real, genuinely
+name-colliding tool alongside drive-server's own `ping`, to prove its
+multi-server client's namespacing against an actual collision, not a
+hypothetical one). Re-ran this step's own unmodified `client.py`
+afterward: `tools/list` shows `ping` alongside the original
+`get_ticket_summary`, both the valid- and invalid-ticket-id cases behave
+identically to sign-off (`isError: true` on the bad id, not a crash),
+and the client's own internal assertion still passes. Exit code 0 — see
+`step4-composition/README.md`'s "Regression check" section for full
+output.

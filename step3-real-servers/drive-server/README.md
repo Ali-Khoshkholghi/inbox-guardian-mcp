@@ -54,3 +54,20 @@ a plain file and a Google Doc present in it:
 
 Auth-failure path (missing `token.json`) and clean stdio shutdown were also
 verified directly (see commit history) before this pass.
+
+## Regression check (Step 4)
+
+Step 4 added a `ping` tool to this server (needed as a real, genuinely
+name-colliding tool alongside step1-fundamentals' own `ping`, to prove
+its multi-server client's namespacing against an actual collision, not
+a hypothetical one). This server has no scripted client of its own —
+the checks above were originally done through Inspector — so the
+regression check scripted the same set of operations
+(`resources/list`, reading the regular file, reading the Google-native
+doc through the export branch, `search_drive_files`) via the SDK
+`ClientSession` and re-ran them against the modified server, plus a
+call to the new `ping` tool. All four original checks reproduced
+exactly (same URIs/mimeTypes, same export text, same search match);
+`ping` appeared only as an addition. Exit code 0 — see
+`step4-composition/README.md`'s "Regression check" section for full
+output.

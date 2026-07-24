@@ -221,13 +221,26 @@ async def handle_list_tools() -> list[types.Tool]:
                 },
                 "required": ["query"],
             },
-        )
+        ),
+        types.Tool(
+            name="ping",
+            description=(
+                "No-op liveness check. Exists only so Step 4 has a real, "
+                "genuinely name-colliding tool to test client-side "
+                "namespacing against (step1's toy server also exposes a "
+                "'ping')."
+            ),
+            inputSchema={"type": "object", "properties": {}},
+        ),
     ]
 
 
 @server.call_tool()
 async def handle_call_tool(name: str, arguments: dict) -> list[types.TextContent]:
     logger.debug("handling tools/call: name=%s arguments=%s", name, arguments)
+
+    if name == "ping":
+        return [types.TextContent(type="text", text="pong from inbox-guardian-drive (step3 server)")]
 
     if name != "search_drive_files":
         raise ValueError(f"Unknown tool: {name}")
