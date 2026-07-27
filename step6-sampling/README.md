@@ -242,14 +242,35 @@ Worth noting explicitly because it's easy to assume adding a new
 primitive (sampling) risked the ones already working; this run is
 evidence it didn't, incidentally rather than by a test aimed at it.
 
+## Why Cerebras, not Anthropic — an environment constraint, not a technical preference
+
+To be explicit about this rather than leaving it implicit (same
+transparency standard as this project's other documented deviations,
+e.g. the Gmail scope/send-path note): **Cerebras is the only LLM
+credential this repo's `.env` actually provisions.** There is no
+`ANTHROPIC_API_KEY` (or any other provider key) checked into or
+expected by this project's setup — `CEREBRAS_API_KEY` is the one
+credential `.env.example`/`.env` carry, so it's what `sampling_handler`
+was built against. The *provider* choice was therefore constrained by
+available credentials, not chosen for any technical merit over
+Anthropic's own models. Within that constraint, the specific *model*
+(`gpt-oss-120b`) was a deliberate pick, not a default: chosen by
+querying the account's actual `/v1/models` list rather than guessing a
+model name that might not exist on this account. Practically, this
+means: sampling's whole premise (the server holds no LLM credential and
+rides on whatever the client already has configured) is demonstrated
+correctly regardless of which provider that happens to be — the
+primitive doesn't care which model answers, only that the *client*'s
+credential answers, not the server's.
+
 ## Mapping the LLM response into MCP, not passing it through raw
 
 This project's LLM access is Cerebras's OpenAI-compatible endpoint
 (`openai` SDK, `base_url="https://api.cerebras.ai/v1"`,
-`CEREBRAS_API_KEY` from `.env` at the repo root), not Anthropic —
-`gpt-oss-120b`, chosen by querying the account's actual `/v1/models`
-list rather than guessing a model name. The completion response is
-explicitly reshaped into MCP's `CreateMessageResult`:
+`CEREBRAS_API_KEY` from `.env` at the repo root) — `gpt-oss-120b` (see
+"Why Cerebras, not Anthropic" above for why this provider/model). The
+completion response is explicitly reshaped into MCP's
+`CreateMessageResult`:
 
 ```python
 return types.CreateMessageResult(
