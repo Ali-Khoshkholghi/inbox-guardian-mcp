@@ -258,6 +258,142 @@ but a real thing this step's own testing surfaced, in the spirit of
 Step 6's `json.loads` denial-path bug: run the actual paths, don't
 assume they work.
 
+## Canonical verified transcript — one real run, everything at once
+
+Every "Proof" section above quotes fragments of one actual run of
+`client.py` against `server.py` (OAuth required), captured wire-for-wire
+in `step7-elicitation/jsonrpc.log` (dated 2026-07-28 — the same run
+behind the file_ids and messages quoted throughout this README). This
+section walks that one log top to bottom so the full pipeline — OAuth,
+both sampling outcomes, elicitation, progress, cancellation — is
+verified together in a single session, not stitched from separate runs.
+
+**1. OAuth 2.1 completes before any tool call.** `jsonrpc.log` lines
+1–26: unauthenticated `POST /mcp` gets `invalid_token`; RFC 9728 and RFC
+8414 discovery; dynamic client registration at `/register`; the human
+approves at `/consent`; `POST /token` returns a bearer JWT. Only then,
+at line 27, does `initialize` go out — `tools/list` (line 31) and the
+first `tools/call` (line 34) both happen strictly after the token
+exchange, not interleaved with it.
+
+**2. Sampling correctly does *not* flag ambiguity for a non-conflicting
+query.** Query `"a PDF file"` (line 34) — the ranking prompt now
+includes each candidate's `content_excerpt`, so the model has enough to
+judge conflict, not just enough to rank:
+
+```
+>>> POST /mcp {"jsonrpc":"2.0","id":0,"result":{"role":"assistant","content":{"type":"text",
+    "text":"{\"ranked_file_ids\":[\"1fi_TlrWlCISvErrGVEFTN-ZhqeN_32UQ\"],\"ambiguous_group\":[]}"},
+    "model":"gpt-oss-120b","stopReason":"endTurn"}}
+```
+
+One relevant file (the PDF), `ambiguous_group: []` — the model saw the
+two refund docs' excerpts in the same candidate list and correctly
+didn't flag them, since neither is a plausible match for "a PDF file"
+in the first place. Ambiguity is about *relevant-but-conflicting*, not
+"any two files with different content."
+
+**3. Sampling correctly *does* flag ambiguity for the genuinely
+conflicting query.** Query `"how do I get my money back for something I
+bought"` (line 74):
+
+```
+>>> POST /mcp {"jsonrpc":"2.0","id":1,"result":{"role":"assistant","content":{"type":"text",
+    "text":"{\"ranked_file_ids\":[\"1mjV64wPNFoEhvZCBhh-H7xcG_r4PgEsWZzY_4HlLKbs\",
+    \"1i83sqL6meMctYNm0If8zlWJvEWlZXeCz4bP8IHc6LCg\"],\"ambiguous_group\":[\"1mjV64wPNFoEhvZCBhh-H7xcG_r4PgEsWZzY_4HlLKbs\",
+    \"1i83sqL6meMctYNm0If8zlWJvEWlZXeCz4bP8IHc6LCg\"]}"},"model":"gpt-oss-120b","stopReason":"endTurn"}}
+```
+
+Both refund docs rank relevant *and* both are named in `ambiguous_group`
+— this is the "Refund Policy" (original payment method, 30 days) vs.
+"Return & Refund Policy" (store credit only, 14 days) conflict, judged
+from the real `content_excerpt` text sent in the prompt, not a
+hardcoded pair.
+
+**4. Elicitation fires with a schema-validated request and a
+schema-shaped (not model-shaped) response.** Line 85: `elicitation/create`
+carries `requestedSchema` with `enum` constrained to exactly those two
+`file_id`s. Line 89, the human's answer:
+
+```
+>>> POST /mcp {"jsonrpc":"2.0","id":2,"result":{"action":"accept","content":{"chosen_file_id":"1mjV64wPNFoEhvZCBhh-H7xcG_r4PgEsWZzY_4HlLKbs"}}}
+```
+
+`{"action":..., "content":{...}}` — no `role`/`model`/`stopReason`
+anywhere in this response, unlike the sampling responses two steps
+above. `_disambiguate_with_human`'s defense-in-depth check confirmed
+`chosen_file_id` was actually a member of the offered `enum` before the
+final tool result (line 91) returned "Refund Policy" — the human's
+choice, not a guess.
+
+**5. Progress notifications match the real byte count exactly.**
+`download_drive_file` on the PDF (`1903362` bytes), `progressToken=4`
+(lines 92–126): 15 `notifications/progress` messages, the last landing
+exactly on `total`:
+
+```
+{"progressToken":4,"progress":131072.0,"total":1903362.0}
+{"progressToken":4,"progress":262144.0,"total":1903362.0}
+...  (13 more, each +131072 — DOWNLOAD_CHUNK_SIZE)
+{"progressToken":4,"progress":1903362.0,"total":1903362.0}
+```
+```
+{"jsonrpc":"2.0","id":4,"result":{"content":[{"type":"text",
+  "text":"Downloaded 'UCLA&MIT.pdf': 1903362 bytes (application/pdf)"}],"isError":false}}
+```
+
+15 notifications, not an approximation — `1903362 / 131072 = 14.52`,
+so 14 full 128 KiB chunks plus one final partial chunk (68,354 bytes)
+land exactly on the tool result's own reported byte count.
+
+**6. Cancellation stops genuine server-side work — cross-checked
+against the server's own chunk loop, not inferred from the client
+giving up.** A second `download_drive_file` on the same file,
+`progressToken=5` (lines 127–134): only **two** `notifications/progress`
+arrive (`131072`, `262144` — chunks 1 and 2) before the client sends
+`notifications/cancelled` and gets back `{"code":0,"message":"Request
+cancelled"}`. No third progress notification, and critically: no
+`_fetch_drive_file_content: requesting chunk 3 of 'UCLA&MIT.pdf'` server
+log line either, and this is mechanically guaranteed by the code, not
+just something not observed:
+
+- `report_progress` (which is what emits `notifications/progress`) is
+  only called *after* a chunk is received (`server.py:271`), so the
+  client is only ever told about chunks the server actually finished.
+- Immediately after reporting chunk 2, the loop hits
+  `await anyio.sleep(DOWNLOAD_CHUNK_PACING_SECONDS)` (`server.py:280`)
+  — an `anyio` checkpoint. `abandon_on_cancel=True` propagates the same
+  cancellation semantics through every checkpoint in this coroutine, so
+  `notifications/cancelled` arriving during that sleep raises right
+  there.
+- `chunk_index += 1` and the `logger.info("...requesting chunk %d...")`
+  call for chunk 3 (`server.py:251-252`) sit *after* that sleep in loop
+  order — they are never reached once the sleep raises. The absence of
+  a "requesting chunk 3" line isn't a logging gap; the line of code
+  that would print it never executes.
+
+So the two logs agree for a structural reason, not a coincidental one:
+the wire log (what the server actually sent) shows exactly 2 completed
+chunks, and the server's own control flow (`server.py:249-280`) proves
+a 3rd chunk request was never issued — the download genuinely stopped,
+it didn't just get abandoned by an impatient client while work
+continued unseen.
+
+## Why Cerebras, not Anthropic (inherited from Step 6, unchanged)
+
+This step reuses Step 6's `sampling_handler` and Cerebras setup as-is —
+no new LLM code was written for elicitation, only a longer ranking
+prompt (see "Giving sampling something to judge conflict on" above).
+The full explanation — that `CEREBRAS_API_KEY` is the only LLM
+credential this repo's `.env` actually provisions, so the *provider*
+was constrained by available credentials rather than chosen for
+technical merit over Anthropic's own models, while `gpt-oss-120b` was a
+deliberate pick within that constraint (queried from the account's real
+`/v1/models` list) — lives in full in
+[`step6-sampling/README.md`, "Why Cerebras, not Anthropic"](../step6-sampling/README.md#why-cerebras-not-anthropic--an-environment-constraint-not-a-technical-preference).
+Not re-litigated here since nothing about that setup changed for this
+step.
+
 ## Running it
 
 Both Drive credentials (`~/.drive-mcp/token.json`, from Step 3) and
@@ -305,6 +441,12 @@ every prior step's Inspector use.
       `handle_call_tool`'s `if chosen_file_id is None` branch in server.py.
 - [x] Inspector's fulfillment of the request matches this project's own
       client-side schema validation (same `enum`, same required field).
+- [x] Full pipeline verified end to end in one real, cross-checked run
+      (OAuth → sampling `ambiguous_group: []` → sampling `ambiguous_group`
+      populated → elicitation → progress → cancellation) — see "Canonical
+      verified transcript" above; cancellation confirmed to stop real
+      server-side work via `server.py`'s own chunk-loop control flow, not
+      inferred from the client giving up.
 
 ## Pitfalls addressed
 
