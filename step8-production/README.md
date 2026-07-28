@@ -29,6 +29,112 @@ git-SHA versioning.
   a (synthetic) write-capable code path, not just documents that it
   would.
 
+## Verified live run — real OAuth, real Drive, real Cerebras, real human elicitation
+
+Everything above this line was verified with `--no-auth` and a stripped
+scratch client, deliberately isolating transport/schema/logging/dry-run
+concerns from OAuth and sampling/elicitation (unchanged since Steps 6-7,
+already verified there). This section is the other half: one real,
+full run of this step's actual `client.py` — OAuth required, no flags
+skipped — against a real Drive account and a real Cerebras completion,
+with a human answering both the sampling-approval prompt and the
+elicitation menu for real. Captured in `jsonrpc.log`, lines 122-210
+(the file also holds an earlier MCP Inspector session, lines 1-121 —
+`clientInfo.name` distinguishes them: `"mcp-inspector"` vs. `"mcp"`
+with `client_name="inbox-guardian-client"` at dynamic registration;
+Inspector's own generic elicitation form isn't what's quoted below,
+this project's own Cerebras-approval-and-typed-menu UI is).
+
+**Mapped to each Step 8 item:**
+
+- **Tool annotations shown via `tools/list` alone.** Line 151, the real
+  `tools/list` response for this session, carries the same
+  `annotations` block quoted under "Tool annotations" above —
+  `readOnlyHint: true, destructiveHint: false, idempotentHint: true,
+  openWorldHint: true` on both tools, on the wire, in this specific
+  authenticated session.
+- **`structuredContent` schema-validated on the final result.** Line
+  157 (`search_drive_files`, unambiguous case):
+  `"structuredContent":{"status":"matched","matches":[{"file_id":"1fi_...","name":"UCLA&MIT.pdf","mimeType":"application/pdf"}],"message":null}`.
+  Line 202 (`download_drive_file`):
+  `"structuredContent":{"file_id":"1fi_...","name":"UCLA&MIT.pdf","mimeType":"application/pdf","size_bytes":1903362}`.
+  Both validate against the `outputSchema` published in the same
+  session's `tools/list` (line 151) — the same two-layer validation
+  described under "Structured output schemas" above, exercised here
+  against real data instead of a hand-built test payload.
+- **`serverInfo.version` matching live `git rev-parse HEAD`.** Line 147:
+  `"serverInfo":{"name":"inbox-guardian-drive-http","version":"1c2949867ac77174cc1d339917f894e6e4d6c042"}`.
+  `git rev-parse HEAD` at the time of writing this section:
+  `1c2949867ac77174cc1d339917f894e6e4d6c042` — an exact match, and
+  notably *without* a `-dirty` suffix this time: this run happened
+  after Step 8's own commit landed and the working tree was clean, the
+  other half of the two states "Versioning" above describes (that
+  section's own example predates the commit and does carry `-dirty`).
+- **Real logging module output (timestamps, levels) — known gap in
+  this specific artifact.** `jsonrpc.log` only ever captures wire
+  traffic (`_log_wire`'s `>>>`/`<<<` lines); the application logger's
+  `[server] LEVEL ...` stderr stream is a separate output this
+  particular session didn't redirect to a file, so there's no saved
+  transcript of real timestamps/levels *from this exact run* to quote
+  here. That behavior is independently verified with genuine captured
+  stderr — same unchanged logging setup, a different run — under "Real
+  logging, not print-debugging" above (the INFO-vs-DEBUG, 16-line-vs-
+  169-line comparison). Flagged explicitly rather than implied by
+  omission.
+- **`--dry-run` guard — not exercised in this run, known gap.** This
+  session ran without `--dry-run` and nothing in it attempts a write,
+  so `_guard_write` was never on this run's call path either way. That
+  build task's live-fire proof is `test_dry_run_guard.py` (quoted under
+  "`--dry-run` mode" above), not this run — noted here explicitly
+  rather than left for a reader to assume it was covered.
+
+**The full chain, in the order it actually happened** (all real,
+`jsonrpc.log` lines 122-210):
+
+1. **OAuth handshake** (122-144): dynamic client registration
+   (`client_name="inbox-guardian-client"`) → `/consent` (human-approved)
+   → `/token` → a real bearer JWT, all completing before line 145's
+   `initialize`.
+2. **`"a PDF file"`** (152-157): sampling ranks one file relevant and
+   correctly returns `"ambiguous_group": []` (line 155) — no conflict,
+   no elicitation, `structuredContent.status == "matched"`.
+3. **`"how do I get my money back for something I bought"`** (158-162):
+   the *same* sampling call now returns a populated
+   `"ambiguous_group":["1mjV...","1i83..."]` (line 162) — the two real
+   refund-policy docs, judged from their actual `content_excerpt` text
+   sent in the prompt (visible in full in line 161), not a hardcoded
+   pair.
+4. **`elicitation/create`, typed schema** (164): `requestedSchema` with
+   `enum` constrained to exactly those two `file_id`s — the server
+   pausing mid-`tools/call` to ask a human rather than guessing.
+5. **Human choice, validated** (165): `{"action":"accept","content":{"chosen_file_id":"1mjV..."}}`
+   — schema-shaped, not a model completion — and line 167's final
+   result reflects exactly that choice (`"name":"Refund Policy"`), not
+   `ambiguous_candidates[0]`.
+6. **Progress on a real 1.9MB download** (168-202): 15
+   `notifications/progress` messages, the last landing exactly on
+   `total` (`1903362.0`), matching the tool result's own reported
+   `size_bytes: 1903362` (line 202) — the same file, the same byte
+   count, independently confirmed by two different messages in this
+   session.
+7. **Cancellation** (203-210): only 2 `notifications/progress` for this
+   `download_drive_file` call (`progressToken=5`, chunks at `131072`
+   and `262144` bytes) before `notifications/cancelled` goes out (208)
+   and the call ends in `{"code":0,"message":"Request cancelled"}`
+   (210) — never reaching a 3rd. This session has no saved server
+   stderr to show a `requesting chunk 3` line is absent (same gap as
+   the logging item above), but the two facts that *are* verified here
+   combine to the same conclusion: `report_progress` only ever fires
+   after a chunk completes (`server.py`, `_fetch_drive_file_content`),
+   so only 2 completed chunks reached the client at all; and the
+   unchanged control flow proven under "Real logging" above (a
+   separate, real DEBUG-level run against this exact code) already
+   showed that code path never logs a 3rd chunk request once
+   cancellation lands mid-pacing-sleep. This run's wire evidence is
+   consistent with that mechanism, not a contradiction of it — but the
+   app-level confirmation specific to *this* session is, honestly, a
+   gap rather than something captured twice.
+
 ## 1. Tool annotations
 
 Both tools got `types.ToolAnnotations` in `handle_list_tools`:
