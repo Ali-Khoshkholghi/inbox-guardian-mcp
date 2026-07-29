@@ -2,6 +2,7 @@
 __pycache__/
 *.pyc
 jsonrpc.log
+agents/transcripts/
 *.egg-info/
 
 # local tool config, not project source
